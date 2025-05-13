@@ -1,41 +1,67 @@
+// server.js
 const express = require("express");
 const http = require("http");
-const cors = require("cors");
 const { Server } = require("socket.io");
+const cors = require("cors");
 
 const app = express();
 const server = http.createServer(app);
-
-app.use(cors());
-
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000", // React client
+    origin: "*", // You should restrict this in production
     methods: ["GET", "POST"],
   },
 });
 
+const users = {}; // roomId => [socketIds]
+
 io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
-
-  socket.on("join_room", (roomId) => {
+  socket.on("join-room", (roomId) => {
     socket.join(roomId);
-    console.log(`User ${socket.id} joined room ${roomId}`);
-  });
 
-  socket.on("send_message", ({ roomId, text }) => {
-    io.to(roomId).emit("receive_message", { text });
-  });
+    // Track users in the room
+    if (!users[roomId]) users[roomId] = [];
+    users[roomId].push(socket.id);
 
-  socket.on("button_click", (roomId) => {
-    io.to(roomId).emit("button_clicked", socket.id);
-  });
+    // Send list of existing users to the new user
+    const otherUsers = users[roomId].filter((id) => id !== socket.id);
+    socket.emit("all-users", otherUsers);
 
-  socket.on("disconnect", () => {
-    console.log("User disconnected:", socket.id);
+    // Notify others of new user
+    socket.to(roomId).emit("user-joined", socket.id);
+
+    // Handle offer, answer, and ICE candidates
+    socket.on("offer", (payload) => {
+      io.to(payload.target).emit("offer", {
+        sdp: payload.sdp,
+        caller: socket.id,
+      });
+    });
+
+    socket.on("answer", (payload) => {
+      io.to(payload.target).emit("answer", {
+        sdp: payload.sdp,
+        caller: socket.id,
+      });
+    });
+
+    socket.on("ice-candidate", (incoming) => {
+      io.to(incoming.target).emit("ice-candidate", {
+        candidate: incoming.candidate,
+        from: socket.id,
+      });
+    });
+
+    socket.on("disconnect", () => {
+      for (const room in users) {
+        users[room] = users[room].filter((id) => id !== socket.id);
+        socket.to(room).emit("user-disconnected", socket.id);
+      }
+    });
+    socket.on("chat-message", ({ roomId, message }) => {
+      socket.to(roomId).emit("chat-message", { message, sender: socket.id });
+    });
   });
 });
 
-server.listen(process.env.PORT || 3001, "0.0.0.0", () => {
-  console.log(`Server is running on port ${process.env.PORT || 3001}`);
-});
+server.listen(5000, () => console.log("Server listening on port 5000"));
